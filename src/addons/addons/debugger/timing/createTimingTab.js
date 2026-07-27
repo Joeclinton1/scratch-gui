@@ -295,6 +295,7 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
 
   // Handle single-step state changes
   let isSingleStepping = false;
+  let restoreProfilingOnResume = false;
   const updateTimingAvailability = () => {
     const compilerEnabled = isCompilerEnabled();
     if (compilerEnabled && config.showLineByLine) {
@@ -320,9 +321,17 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
   const handleSingleStepChange = (paused) => {
     isSingleStepping = Boolean(paused && getRunningThread());
     if (isSingleStepping && config.showLineByLine) {
+      restoreProfilingOnResume = true;
       lineByLineButton.checkbox.checked = false;
       config.showLineByLine = false;
       profiler.unpolluteStepThread();
+    } else if (!isSingleStepping && restoreProfilingOnResume) {
+      restoreProfilingOnResume = false;
+      if (!isCompilerEnabled()) {
+        lineByLineButton.checkbox.checked = true;
+        config.showLineByLine = true;
+        polluteStepThread();
+      }
     }
     updateTimingAvailability();
   };
