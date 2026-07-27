@@ -9,12 +9,17 @@ import { isPaused, onPauseChanged, onSingleStep, getRunningThread } from "../mod
 
 export default async function createTimingTab({ debug, addon, console, msg }) {
   const vm = addon.tab.traps.vm;
-  const isCompilerEnabled = () => vm.runtime.compilerOptions.enabled;
+  const profilingRestartNotice = Object.assign(document.createElement("div"), {
+    className: "sa-timing-restart-notice",
+    textContent: "Restart the project to begin profiling.",
+    hidden: true,
+  });
 
   function createContent() {
     const content = Object.assign(document.createElement("div"), {
       className: "sa-timing-content",
     });
+    content.appendChild(profilingRestartNotice);
     content.appendChild(tableHeader);
     content.appendChild(tableRows.outerElement);
 
@@ -50,13 +55,17 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
 
     // Handle checkbox change
     checkbox.addEventListener("change", () => {
-      if (lineByLineButton.element.disabled || isCompilerEnabled()) checkbox.checked = false;
+      if (lineByLineButton.element.disabled) checkbox.checked = false;
       config.showLineByLine = checkbox.checked;
       if (config.showLineByLine && !config.isStepThreadPolluted) {
         polluteStepThread();
       } else if (!config.showLineByLine && config.isStepThreadPolluted) {
         unpolluteStepThread();
       }
+      profilingRestartNotice.hidden =
+        !config.showLineByLine ||
+        !vm.runtime.compilerOptions.enabled ||
+        !vm.runtime.threads.some((thread) => thread.isCompiled);
     });
 
     lineByLineButton.checkbox = checkbox;
@@ -172,7 +181,7 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
 
     // Handle checkbox change
     checkbox.addEventListener("change", () => {
-      if (heatmapButton.element.disabled || isCompilerEnabled()) checkbox.checked = false;
+      if (heatmapButton.element.disabled) checkbox.checked = false;
       config.showHeatmap = checkbox.checked;
       sliderContainer.style.display = checkbox.checked ? "block" : "none";
 
@@ -289,7 +298,11 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
   const heatmapButton = createHeatmapButton();
 
   // setup events
+  let lastTableUpdate = 0;
   debug.addAfterStepCallback(() => {
+    const now = performance.now();
+    if (now - lastTableUpdate < 100) return;
+    lastTableUpdate = now;
     tableRows.updateLogRows(timingManager.getTimers(), config.showLineByLine);
   });
 
@@ -297,25 +310,13 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
   let isSingleStepping = false;
   let restoreProfilingOnResume = false;
   const updateTimingAvailability = () => {
-    const compilerEnabled = isCompilerEnabled();
-    if (compilerEnabled && config.showLineByLine) {
-      lineByLineButton.checkbox.checked = false;
-      config.showLineByLine = false;
-      profiler.unpolluteStepThread();
-    }
-    if (compilerEnabled && config.showHeatmap) {
-      heatmapButton.checkbox.checked = false;
-      config.showHeatmap = false;
-      heatmapManager.hideHeatmapFn();
-    }
-
-    const profilingDisabled = compilerEnabled || isSingleStepping;
+    const profilingDisabled = isSingleStepping;
     lineByLineButton.element.disabled = profilingDisabled;
     lineByLineButton.checkbox.disabled = profilingDisabled;
     lineByLineButton.element.classList.toggle("sa-timing-disabled", profilingDisabled);
-    heatmapButton.element.disabled = compilerEnabled;
-    heatmapButton.checkbox.disabled = compilerEnabled;
-    heatmapButton.element.classList.toggle("sa-timing-disabled", compilerEnabled);
+    heatmapButton.element.disabled = false;
+    heatmapButton.checkbox.disabled = false;
+    heatmapButton.element.classList.remove("sa-timing-disabled");
   };
 
   const handleSingleStepChange = (paused) => {
@@ -327,11 +328,9 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
       profiler.unpolluteStepThread();
     } else if (!isSingleStepping && restoreProfilingOnResume) {
       restoreProfilingOnResume = false;
-      if (!isCompilerEnabled()) {
-        lineByLineButton.checkbox.checked = true;
-        config.showLineByLine = true;
-        polluteStepThread();
-      }
+      lineByLineButton.checkbox.checked = true;
+      config.showLineByLine = true;
+      polluteStepThread();
     }
     updateTimingAvailability();
   };
@@ -340,6 +339,9 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
   onPauseChanged(handleSingleStepChange);
   onSingleStep(() => handleSingleStepChange(isPaused()));
   vm.on("COMPILER_OPTIONS_CHANGED", updateTimingAvailability);
+  vm.on("PROJECT_START", () => {
+    profilingRestartNotice.hidden = true;
+  });
 
   // Listen for blocks being updated/recreated and reapply heatmap if needed
   updateAllBlocksEvents.addEventListener("blocksUpdated", () => {

@@ -5,6 +5,11 @@ class Profiler {
     this.config = config;
     this.profilerActive = false;
     this.tm = null;
+    this.compiledProfiler = {
+      enabled: false,
+      block: (thread, blockId) => this.profileCompiledBlock(thread, blockId),
+      end: (thread) => this.finishCompiledThread(thread),
+    };
   }
 
   patchThreadBlockGlowInFrame(thread, profiler) {
@@ -29,9 +34,14 @@ class Profiler {
   }
 
   polluteStepThread(vm) {
+    if (this.config.isStepThreadPolluted) return;
+
     this.config.isStepThreadPolluted = true;
     this.vm = vm;
     this.originalStepThread = vm.runtime.sequencer.stepThread;
+    this.compiledProfiler.enabled = true;
+    vm.runtime.debuggerCompiledProfiler = this.compiledProfiler;
+    vm.runtime.resetAllCaches();
     const profiler = this;
 
     /*
@@ -84,6 +94,9 @@ class Profiler {
     if (!this.config.isStepThreadPolluted) return;
 
     this.profilerActive = false;
+    this.finishCompiledThread();
+    this.compiledProfiler.enabled = false;
+    this.vm.runtime.resetAllCaches();
     this.vm.runtime.sequencer.stepThread = this.originalStepThread;
 
     if (this.originalProfilerDescriptor) {
@@ -97,6 +110,22 @@ class Profiler {
     // so we're going to be lazy and not unpollute the instance
 
     this.config.isStepThreadPolluted = false;
+  }
+
+  profileCompiledBlock(thread, blockId) {
+    if (!this.compiledProfiler.enabled || !this.config.showLineByLine) return;
+
+    const currentTime = performance.now();
+    if (this.currentBlock !== null) this.tm.stopTimer(this.currentBlock, currentTime);
+
+    this.thread = thread;
+    this.tm.startTimer(blockId, thread.target.id, blockId, currentTime);
+    this.currentBlock = blockId;
+  }
+
+  finishCompiledThread() {
+    if (this.currentBlock !== null) this.tm.stopTimer(this.currentBlock);
+    this.currentBlock = null;
   }
 
   profile() {

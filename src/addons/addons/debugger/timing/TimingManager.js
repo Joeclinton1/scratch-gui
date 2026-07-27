@@ -9,7 +9,7 @@ class TimingManager {
     this.heatmapManager = null; // Will be set by createTimingTab.js
   }
 
-  startTimer(label, targetId = null, blockId = null) {
+  startTimer(label, targetId = null, blockId = null, currentTime = performance.now()) {
     // Use a default key for empty labels
     const isEmptyLabel = label === "";
     if (isEmptyLabel) {
@@ -21,7 +21,6 @@ class TimingManager {
       this.lastTimerLabel = null;
     }
 
-    const currentTime = performance.now();
     if (this.timers[label]) {
       this.timers[label].startTime = currentTime;
       this.timers[label].callCount += 1;
@@ -51,12 +50,11 @@ class TimingManager {
     if (label !== blockId) this.lastTimerLabel = label;
   }
 
-  stopTimer(label) {
+  stopTimer(label, currentTime = performance.now()) {
     // Use the same default key for empty labels
     if (label === "") {
       label = "__empty_timer__";
     }
-    const currentTime = performance.now();
     if (this.timers[label] && this.timers[label].isActive) {
       this.timers[label].totalTime += currentTime - this.timers[label].startTime;
       this.timers[label].isActive = false;
