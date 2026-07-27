@@ -5,7 +5,7 @@ import { createTableHeader } from "./ui-components/tableHeader.js";
 import TableRows from "./ui-components/TableRows.js"; // Importing the extended LogView class
 import { updateAllBlocksEvents } from "../../../libraries/common/cs/update-all-blocks.js";
 import downloadBlob from "../../../libraries/common/cs/download-blob.js";
-import { isPaused, onPauseChanged, getRunningThread } from "../module.js";
+import { isPaused, onPauseChanged, onSingleStep, getRunningThread } from "../module.js";
 
 export default async function createTimingTab({ debug, addon, console, msg }) {
   const vm = addon.tab.traps.vm;
@@ -338,6 +338,7 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
 
   handleSingleStepChange(isPaused());
   onPauseChanged(handleSingleStepChange);
+  onSingleStep(() => handleSingleStepChange(isPaused()));
   vm.on("COMPILER_OPTIONS_CHANGED", updateTimingAvailability);
 
   // Listen for blocks being updated/recreated and reapply heatmap if needed
