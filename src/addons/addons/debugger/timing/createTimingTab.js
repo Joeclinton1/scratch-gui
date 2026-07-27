@@ -391,10 +391,10 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
       }
     },
     startTimer: (...args) => {
-      if (!isCompilerEnabled()) timingManager.startTimer(...args);
+      timingManager.startTimer(...args);
     },
     stopTimer: (...args) => {
-      if (!isCompilerEnabled()) timingManager.stopTimer(...args);
+      timingManager.stopTimer(...args);
     },
     clearTimers: timingManager.clearTimers.bind(timingManager),
   };

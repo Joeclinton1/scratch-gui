@@ -76,7 +76,6 @@ export default async function ({ addon, console, msg }) {
     args: ["label"],
     displayName: msg("block-start-timer"),
     callback: ({ label }, thread) => {
-      if (vm.runtime.compilerOptions.enabled || thread.isCompiled) return;
       const normalizedLabel = label === "" || typeof label === "undefined" ? msg("default-timer-label") : label;
       if (timingTab) timingTab.startTimer(normalizedLabel, thread.target.id, thread.peekStack());
     },
@@ -85,7 +84,6 @@ export default async function ({ addon, console, msg }) {
     args: ["label"],
     displayName: msg("block-stop-timer"),
     callback: ({ label }, thread) => {
-      if (vm.runtime.compilerOptions.enabled || thread.isCompiled) return;
       const normalizedLabel = label === "" || typeof label === "undefined" ? msg("default-timer-label") : label;
       if (timingTab) timingTab.stopTimer(normalizedLabel);
     },
@@ -148,7 +146,7 @@ export default async function ({ addon, console, msg }) {
   });
   compilerWarning.className = "sa-debugger-compiler-warning";
   // TW: TODO: translate
-  compilerWarning.textContent = "Thread stepping and timing tools only work when the compiler is disabled.";
+  compilerWarning.textContent = "The debugger works best when the compiler is disabled.";
   const updateCompilerWarningVisibility = () => {
     compilerWarning.hidden = !vm.runtime.compilerOptions.enabled;
   };
