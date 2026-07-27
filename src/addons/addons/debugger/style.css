@@ -81,7 +81,7 @@
   background-color: rgba(0, 0, 0, 0.15);
 }
 .sa-debugger-tabs li.sa-debugger-tab-selected {
-  background-color: white;
+  background-color: var(--ui-modal-background);
   background-clip: padding-box;
   border-color: rgba(0, 0, 0, 0.25);
   /* TW: unhardcode purple */
