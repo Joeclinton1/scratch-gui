@@ -37,6 +37,9 @@ const base = {
         disableHostCheck: true,
         compress: true,
         port: process.env.PORT || 8601,
+        headers: {
+            'Document-Isolation-Policy': 'isolate-and-credentialless'
+        },
         // allows ROUTING_STYLE=wildcard to work properly
         historyApiFallback: {
             rewrites: [
