@@ -1,6 +1,5 @@
 class TimingManager {
-  constructor(settings, config, profiler) {
-    this.dummyProfiler = profiler;
+  constructor(settings, config) {
     this.settings = settings;
     this.config = config;
 
@@ -16,7 +15,7 @@ class TimingManager {
       label = "__empty_timer__";
     }
 
-    if (label !== blockId && this.lastTimerLabel !== null && this.settings.get("auto_stop_timing")) {
+    if (this.lastTimerLabel !== null && this.settings.get("auto_stop_timing")) {
       this.stopTimer(this.lastTimerLabel);
       this.lastTimerLabel = null;
     }
@@ -47,7 +46,7 @@ class TimingManager {
       this.heatmapManager.markTimerModified(blockId);
     }
 
-    if (label !== blockId) this.lastTimerLabel = label;
+    this.lastTimerLabel = label;
   }
 
   stopTimer(label, currentTime = performance.now()) {
@@ -65,6 +64,31 @@ class TimingManager {
       }
     }
     if (label === this.lastTimerLabel) this.lastTimerLabel = null;
+  }
+
+  // The sampling profiler only knows how much time was spent, not how many times the block ran,
+  // so its rows have a call count of 0.
+  addProfileTime(key, time, targetId, blockId, displayLabel, calls = 0) {
+    if (this.timers[key]) {
+      this.timers[key].totalTime += time;
+      this.timers[key].callCount += calls;
+    } else {
+      this.timers[key] = {
+        startTime: 0,
+        totalTime: time,
+        callCount: calls,
+        targetId,
+        blockId,
+        idx: Object.keys(this.timers).length,
+        isActive: false,
+        isProfile: true,
+        displayLabel,
+      };
+    }
+
+    if (this.heatmapManager && blockId) {
+      this.heatmapManager.markTimerModified(blockId);
+    }
   }
 
   clearTimers() {

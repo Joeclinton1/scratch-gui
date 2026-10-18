@@ -1,18 +1,18 @@
-class Profiler {
-  constructor(config) {
-    this.currentBlock = null;
-    this.thread = null;
-    this.config = config;
-    this.profilerActive = false;
+// Profiles interpreted threads by timing each block from when it starts to when the next one starts.
+// Compiled threads don't go through the interpreter, so they're profiled by SamplingProfiler instead.
+class InterpreterProfiler {
+  constructor(vm) {
+    this.vm = vm;
     this.tm = null;
-    this.compiledProfiler = {
-      enabled: false,
-      block: (thread, blockId) => this.profileCompiledBlock(thread, blockId),
-      end: (thread) => this.finishCompiledThread(thread),
-    };
+    this.isProfiling = false;
+    this.profilerActive = false;
+    this.thread = null;
+    this.currentBlock = null;
+    this.currentTarget = null;
+    this.startTime = 0;
   }
 
-  patchThreadBlockGlowInFrame(thread, profiler) {
+  patchThreadBlockGlowInFrame(thread) {
     if (!thread) return;
 
     const desc = Object.getOwnPropertyDescriptor(thread, "blockGlowInFrame");
@@ -20,6 +20,7 @@ class Profiler {
     // already patched?
     if (desc && typeof desc.set === "function" && desc.set.__profilerPatched) return;
 
+    const profiler = this;
     Object.defineProperty(thread, "blockGlowInFrame", {
       get() {
         return this._blockGlowInFrame;
@@ -33,15 +34,12 @@ class Profiler {
     Object.getOwnPropertyDescriptor(thread, "blockGlowInFrame").set.__profilerPatched = true;
   }
 
-  polluteStepThread(vm) {
-    if (this.config.isStepThreadPolluted) return;
+  start() {
+    if (this.isProfiling) return;
+    this.isProfiling = true;
 
-    this.config.isStepThreadPolluted = true;
-    this.vm = vm;
+    const vm = this.vm;
     this.originalStepThread = vm.runtime.sequencer.stepThread;
-    this.compiledProfiler.enabled = true;
-    vm.runtime.debuggerCompiledProfiler = this.compiledProfiler;
-    vm.runtime.resetAllCaches();
     const profiler = this;
 
     /*
@@ -69,18 +67,18 @@ class Profiler {
         if (profiler.profilerActive) profiler.profile();
         return null;
       },
+      configurable: true,
     });
 
     vm.runtime.sequencer.stepThread = function (...args) {
       profiler.thread = this.activeThread;
-      profiler.patchThreadBlockGlowInFrame(profiler.thread, profiler);
+      profiler.patchThreadBlockGlowInFrame(profiler.thread);
 
       profiler.profilerActive = true; // set to active here before the stepThread so that our first profile() will get called just before execute
       const result = profiler.originalStepThread.apply(this, args);
       profiler.profilerActive = false;
 
-      if (profiler.currentBlock !== null) profiler.tm.stopTimer(profiler.currentBlock); // stop timer at end of thread to end any timers that are still open.
-      profiler.currentBlock = null;
+      profiler.finishBlock(); // end any timer that is still open at the end of the thread
 
       return result;
     };
@@ -90,13 +88,12 @@ class Profiler {
   Cleanup to prevent VM crashes when single-step debugger also hooks blockGlowInFrame.
   Store original state, make properties configurable, restore on cleanup.
   */
-  unpolluteStepThread() {
-    if (!this.config.isStepThreadPolluted) return;
+  stop() {
+    if (!this.isProfiling) return;
+    this.isProfiling = false;
 
     this.profilerActive = false;
-    this.finishCompiledThread();
-    this.compiledProfiler.enabled = false;
-    this.vm.runtime.resetAllCaches();
+    this.finishBlock();
     this.vm.runtime.sequencer.stepThread = this.originalStepThread;
 
     if (this.originalProfilerDescriptor) {
@@ -108,24 +105,6 @@ class Profiler {
     // technically we should be unpolluting every thread that we polluted whilst running the debugger to remove the block blockGlowInFrame property definition change,
     // but this doesn't cause a conflict with the stepThreading, and the next time you click green flag you'll get all new threads,
     // so we're going to be lazy and not unpollute the instance
-
-    this.config.isStepThreadPolluted = false;
-  }
-
-  profileCompiledBlock(thread, blockId) {
-    if (!this.compiledProfiler.enabled || !this.config.showLineByLine) return;
-
-    const currentTime = performance.now();
-    if (this.currentBlock !== null) this.tm.stopTimer(this.currentBlock, currentTime);
-
-    this.thread = thread;
-    this.tm.startTimer(blockId, thread.target.id, blockId, currentTime);
-    this.currentBlock = blockId;
-  }
-
-  finishCompiledThread() {
-    if (this.currentBlock !== null) this.tm.stopTimer(this.currentBlock);
-    this.currentBlock = null;
   }
 
   profile() {
@@ -134,12 +113,25 @@ class Profiler {
     const blockId = this.thread.peekStack();
     if (blockId === null || this.thread.blockContainer._blocks[blockId]?.isMonitored === true) return;
 
-    if (this.config.showLineByLine) this.tm.startTimer(blockId, this.thread.target.id, blockId);
-
-    if (this.config.showLineByLine && this.currentBlock !== null) this.tm.stopTimer(this.currentBlock);
-
+    const now = performance.now();
+    this.finishBlock(now);
     this.currentBlock = blockId;
+    this.currentTarget = this.thread.target.sprite.clones[0].id;
+    this.startTime = now;
+  }
+
+  finishBlock(now = performance.now()) {
+    if (this.currentBlock === null) return;
+    this.tm.addProfileTime(
+      `interpreter:${this.currentBlock}`,
+      now - this.startTime,
+      this.currentTarget,
+      this.currentBlock,
+      undefined,
+      1
+    );
+    this.currentBlock = null;
   }
 }
 
-export default Profiler;
+export default InterpreterProfiler;

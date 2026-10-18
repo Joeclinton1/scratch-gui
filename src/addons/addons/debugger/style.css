@@ -102,7 +102,8 @@
   padding: 0 13px 0 0;
 }
 
-.sa-debugger-compiler-warning {
+.sa-debugger-compiler-warning,
+.sa-timing-restart-notice {
   position: static;
   display: flex;
   flex: 0 0 auto;
@@ -115,11 +116,14 @@
   padding: 6px 12px;
   border-bottom: 1px solid var(--ui-black-transparent);
   background-color: var(--ui-modal-background);
-  color: var(--link-color);
   text-align: center;
   font-family: monospace;
   font-size: 12px;
   line-height: 1.3;
+}
+
+.sa-debugger-compiler-warning {
+  color: var(--link-color);
   cursor: pointer;
 }
 
@@ -373,18 +377,13 @@
   height: 100%; /* Ensure the parent has a specific height */
 }
 
-.sa-timing-restart-notice {
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  width: 100%;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--ui-black-transparent);
-  background-color: var(--ui-modal-background);
-  color: var(--error-primary, #ff4c4c);
-  text-align: center;
-  font-family: monospace;
-  font-size: 12px;
-  line-height: 1.3;
+.sa-timing-unsupported-notice {
+  display: block;
+}
+
+.sa-timing-unsupported-notice a {
+  color: var(--link-color);
+  cursor: pointer;
 }
 
 .sa-timing-restart-notice[hidden] {
@@ -406,6 +405,12 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The sampling profiler doesn't measure average time or call count */
+.sa-timing-sampling .sa-timing-timer > :nth-child(3),
+.sa-timing-sampling .sa-timing-timer > :nth-child(5) {
+  display: none;
 }
 
 .sa-timing-header {
@@ -430,7 +435,8 @@
 }
 
 .sa-timing-content .sa-debugger-block-preview,
-.sa-timing-content .sa-debugger-log-link {
+.sa-timing-content .sa-debugger-log-link,
+.sa-timing-content .sa-timing-plain-label {
   width: 115px;
   text-wrap: nowrap;
   text-align: center;

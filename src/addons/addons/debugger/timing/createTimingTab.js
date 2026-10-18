@@ -1,6 +1,7 @@
 import TimingManager from "./TimingManager.js";
 import HeatmapManager from "./HeatmapManager.js";
-import Profiler from "./Profiler.js";
+import SamplingProfiler from "./SamplingProfiler.js";
+import InterpreterProfiler from "./InterpreterProfiler.js";
 import { createTableHeader } from "./ui-components/tableHeader.js";
 import TableRows from "./ui-components/TableRows.js"; // Importing the extended LogView class
 import { updateAllBlocksEvents } from "../../../libraries/common/cs/update-all-blocks.js";
@@ -14,12 +15,27 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
     textContent: "Restart the project to begin profiling.",
     hidden: true,
   });
+  const profilingUnsupportedNotice = Object.assign(document.createElement("div"), {
+    className: "sa-timing-restart-notice sa-timing-unsupported-notice",
+    hidden: true,
+  });
+  const disableCompilerLink = Object.assign(document.createElement("a"), {
+    textContent: msg("timing-disable-compiler"),
+  });
+  disableCompilerLink.addEventListener("click", () => {
+    vm.setCompilerOptions({ enabled: false });
+  });
+  profilingUnsupportedNotice.append(
+    `${msg("timing-profiling-unsupported")} ${msg("timing-profiling-unsupported-details")} `,
+    disableCompilerLink
+  );
 
   function createContent() {
     const content = Object.assign(document.createElement("div"), {
       className: "sa-timing-content",
     });
     content.appendChild(profilingRestartNotice);
+    content.appendChild(profilingUnsupportedNotice);
     content.appendChild(tableHeader);
     content.appendChild(tableRows.outerElement);
 
@@ -56,16 +72,7 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
     // Handle checkbox change
     checkbox.addEventListener("change", () => {
       if (lineByLineButton.element.disabled) checkbox.checked = false;
-      config.showLineByLine = checkbox.checked;
-      if (config.showLineByLine && !config.isStepThreadPolluted) {
-        polluteStepThread();
-      } else if (!config.showLineByLine && config.isStepThreadPolluted) {
-        unpolluteStepThread();
-      }
-      profilingRestartNotice.hidden =
-        !config.showLineByLine ||
-        !vm.runtime.compilerOptions.enabled ||
-        !vm.runtime.threads.some((thread) => thread.isCompiled);
+      setProfiling(checkbox.checked);
     });
 
     lineByLineButton.checkbox = checkbox;
@@ -208,18 +215,25 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
     exportButton.element.addEventListener("click", () => {
       if (tableRows.rows.length === 0) return;
 
+      // Average time and call count aren't measured by the sampling profiler
+      const columns = tableRows.hasSampledRows
+        ? ["label", "totalTime", "percent"]
+        : ["label", "totalTime", "avgTime", "percent", "callCount"];
+      const headerNames = {
+        label: "Label",
+        totalTime: "Total Time (ms)",
+        avgTime: "Avg Time (ms)",
+        percent: config.showRatioTime ? "Ratio Time" : "Percent Time",
+        callCount: "Call Count",
+      };
+
       // Create CSV headers
-      const headers = [
-        "Label",
-        "Total Time (ms)",
-        "Avg Time (ms)",
-        config.showRatioTime ? "Ratio Time" : "Percent Time",
-        "Call Count",
-      ];
+      const headers = columns.map((column) => headerNames[column]);
 
       // Create CSV rows
       const rows = tableRows.rows.map((row) => {
-        const values = Object.values(tableRows.getRowValues(row));
+        const rowValues = tableRows.getRowValues(row);
+        const values = columns.map((column) => rowValues[column]);
         // Convert non-breaking space back to empty string for CSV export
         if (values[0] === "\u00A0") {
           values[0] = "";
@@ -245,7 +259,7 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
 
     clearButton.element.addEventListener("click", () => {
       timingManager.clearTimers();
-      tableRows.updateLogRows(timingManager.getTimers(), config.showLineByLine);
+      updateTable();
       heatmapManager.modifiedTimers.clear();
 
       if (config.showHeatmap) {
@@ -265,30 +279,27 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
 
   // config for our block scope settings that can be modified in the toolbar
   const config = {
-    showLineByLine: false,
+    isProfiling: false,
     showHeatmap: false,
     showRatioTime: false,
     sortHeader: null,
     sortDirection: "descending",
-    isStepThreadPolluted: false,
     currentHeatmapMax: 1.0, // Store heatmap max value for reapply operations
   };
   const { tableHeader, percentHeader } = createTableHeader(config, msg);
   const tableRows = new TableRows(config, debug, msg, tableHeader);
 
-  const profiler = new Profiler(config);
-  // function to pollute stepThread with our new Profiler to handle line by line profiling
-  const polluteStepThread = () => profiler.polluteStepThread(vm, timingManager);
-  const unpolluteStepThread = () => profiler.unpolluteStepThread();
-
-  const timingManager = new TimingManager(addon.settings, config, profiler);
+  const samplingProfiler = new SamplingProfiler(vm, msg);
+  const interpreterProfiler = new InterpreterProfiler(vm);
+  const timingManager = new TimingManager(addon.settings, config);
   const heatmapManager = new HeatmapManager(
     () => addon.tab.traps.getWorkspace(),
     tableRows,
     config,
     vm
   );
-  profiler.tm = timingManager;
+  samplingProfiler.tm = timingManager;
+  interpreterProfiler.tm = timingManager;
   timingManager.heatmapManager = heatmapManager; // Connect them for real-time updates
 
   const content = createContent();
@@ -297,40 +308,72 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
   const lineByLineButton = createLineByLineButton();
   const heatmapButton = createHeatmapButton();
 
+  function updateTable() {
+    tableRows.updateLogRows(timingManager.getTimers());
+    content.classList.toggle("sa-timing-sampling", tableRows.hasSampledRows);
+  }
+
   // setup events
   let lastTableUpdate = 0;
   debug.addAfterStepCallback(() => {
     const now = performance.now();
     if (now - lastTableUpdate < 100) return;
     lastTableUpdate = now;
-    tableRows.updateLogRows(timingManager.getTimers(), config.showLineByLine);
+    updateTable();
   });
+
+  // Compiled scripts can only be profiled by the sampler, which needs SharedArrayBuffer.
+  // Interpreted scripts are profiled by hooking the interpreter.
+  const getProfiler = () => {
+    if (!vm.runtime.compilerOptions.enabled) return interpreterProfiler;
+    return samplingProfiler.isAvailable() ? samplingProfiler : null;
+  };
+
+  let activeProfiler = null;
+  const startProfiling = () => {
+    activeProfiler = getProfiler();
+    if (activeProfiler) activeProfiler.start();
+    // Scripts that were already compiled before profiling started aren't instrumented.
+    profilingRestartNotice.hidden =
+      activeProfiler !== samplingProfiler || !vm.runtime.threads.some((thread) => thread.isCompiled);
+  };
+  const stopProfiling = () => {
+    if (activeProfiler) activeProfiler.stop();
+    activeProfiler = null;
+    profilingRestartNotice.hidden = true;
+  };
+  function setProfiling(enabled) {
+    lineByLineButton.checkbox.checked = enabled;
+    config.isProfiling = enabled;
+    if (enabled) {
+      startProfiling();
+    } else {
+      stopProfiling();
+    }
+  }
 
   // Handle single-step state changes
   let isSingleStepping = false;
   let restoreProfilingOnResume = false;
   const updateTimingAvailability = () => {
-    const profilingDisabled = isSingleStepping;
-    lineByLineButton.element.disabled = profilingDisabled;
-    lineByLineButton.checkbox.disabled = profilingDisabled;
-    lineByLineButton.element.classList.toggle("sa-timing-disabled", profilingDisabled);
-    heatmapButton.element.disabled = false;
-    heatmapButton.checkbox.disabled = false;
-    heatmapButton.element.classList.remove("sa-timing-disabled");
+    const profiler = getProfiler();
+    profilingUnsupportedNotice.hidden = profiler !== null;
+    // The interpreter profiler's hooks conflict with single stepping
+    const available = profiler !== null && !(isSingleStepping && profiler === interpreterProfiler);
+    if (!available && config.isProfiling) setProfiling(false);
+    lineByLineButton.element.disabled = !available;
+    lineByLineButton.checkbox.disabled = !available;
+    lineByLineButton.element.classList.toggle("sa-timing-disabled", !available);
   };
 
   const handleSingleStepChange = (paused) => {
     isSingleStepping = Boolean(paused && getRunningThread());
-    if (isSingleStepping && config.showLineByLine) {
+    if (isSingleStepping && activeProfiler === interpreterProfiler) {
       restoreProfilingOnResume = true;
-      lineByLineButton.checkbox.checked = false;
-      config.showLineByLine = false;
-      profiler.unpolluteStepThread();
+      setProfiling(false);
     } else if (!isSingleStepping && restoreProfilingOnResume) {
       restoreProfilingOnResume = false;
-      lineByLineButton.checkbox.checked = true;
-      config.showLineByLine = true;
-      polluteStepThread();
+      setProfiling(true);
     }
     updateTimingAvailability();
   };
@@ -338,7 +381,14 @@ export default async function createTimingTab({ debug, addon, console, msg }) {
   handleSingleStepChange(isPaused());
   onPauseChanged(handleSingleStepChange);
   onSingleStep(() => handleSingleStepChange(isPaused()));
-  vm.on("COMPILER_OPTIONS_CHANGED", updateTimingAvailability);
+  vm.on("COMPILER_OPTIONS_CHANGED", () => {
+    // Switch profilers when the compiler is toggled
+    if (config.isProfiling && activeProfiler !== getProfiler()) {
+      stopProfiling();
+      startProfiling();
+    }
+    updateTimingAvailability();
+  });
   vm.on("PROJECT_START", () => {
     profilingRestartNotice.hidden = true;
   });

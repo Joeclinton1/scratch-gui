@@ -14,39 +14,44 @@ class TableRows extends LogView {
     this.minTimerTime = null;
     this.debug = debug;
     this.tableHeader = tableHeader;
+    // Row objects are reused between updates so that LogView doesn't regenerate their elements
+    this.rowCache = new Map();
 
     this.placeholderElement.textContent = msg("timing-no-timers");
   }
 
-  getRowValues(timer) {
+  getRowLabel(timer) {
     let displayLabel = timer.displayLabel !== undefined ? timer.displayLabel : timer.label;
     // Ensure empty labels have height by using a non-breaking space
     if (displayLabel === "") {
       displayLabel = "\u00A0"; // non-breaking space
     }
 
-    // For line-by-line timers (where label === blockId), use the human-readable block text
-    if (timer.label === timer.blockId && timer.targetId !== null && timer.blockId !== null) {
+    // For profiler rows, use the human-readable block text
+    if (timer.isProfile && timer.targetId !== null && timer.blockId !== null) {
       const preview = this.debug.createBlockPreview(timer.targetId, timer.blockId);
       if (preview !== null) {
         displayLabel = `${timer.idx}: ${preview.textContent}`;
       }
     }
 
-    const rowValues = {
-      label: displayLabel,
+    return displayLabel;
+  }
+
+  getRowNumbers(timer) {
+    return {
       totalTime: timer.totalTime.toFixed(1),
-      avgTime: (timer.totalTime / timer.callCount).toFixed(2),
+      avgTime: timer.callCount === 0 ? "" : (timer.totalTime / timer.callCount).toFixed(2),
+      // Profiler rows and timer rows are each compared against their own kind
       percent: this.config.showRatioTime
-        ? this.minTimerTime === 0 && timer.totalTime === 0
-          ? "1.0"
-          : (timer.totalTime / this.minTimerTime).toFixed(1)
-        : this.totalTimerTime === 0 && timer.totalTime === 0
-          ? "100.00"
-          : ((100 * timer.totalTime) / this.totalTimerTime).toFixed(2),
-      callCount: timer.callCount,
+        ? (timer.totalTime / (timer.isProfile ? this.minProfileTime : this.minTimerTime)).toFixed(1)
+        : this.getPercent(timer.totalTime, timer.isProfile ? this.totalProfileTime : this.totalTimerTime),
+      callCount: timer.callCount === 0 ? "" : timer.callCount,
     };
-    return rowValues;
+  }
+
+  getRowValues(timer) {
+    return { label: this.getRowLabel(timer), ...this.getRowNumbers(timer) };
   }
 
   generateRow(timer) {
@@ -62,68 +67,79 @@ class TableRows extends LogView {
         labelElem.textContent = `${timer.idx}: ${preview.textContent}`;
         labelElem.setAttribute("data-shape", preview.getAttribute("data-shape"));
       }
-      if (timer.label !== timer.blockId) {
-        const { label } = this.getRowValues(timer);
-        labelElem.textContent = label;
+      if (!timer.isProfile) {
+        labelElem.textContent = this.getRowLabel(timer);
       }
     } else {
-      const { label } = this.getRowValues(timer);
-      labelElem = createInfoElement(label);
+      labelElem = createInfoElement(this.getRowLabel(timer));
+      labelElem.classList.add("sa-timing-plain-label");
     }
 
-    const { totalTime, avgTime, percent, callCount } = this.getRowValues(timer);
-    const perSymbol = this.config.showRatioTime ? "" : "%";
-    const formattedValues = [`${totalTime} ms`, `${avgTime} ms`, `${percent} ${perSymbol}`, callCount];
-    const elements = [labelElem, ...formattedValues.map((v) => createInfoElement(v))];
-    elements.forEach((elem) => root.appendChild(elem));
-    return { root, ...elements };
+    const totalTime = createInfoElement("");
+    const avgTime = createInfoElement("");
+    const percent = createInfoElement("");
+    const callCount = createInfoElement("");
+    root.append(labelElem, totalTime, avgTime, percent, callCount);
+    return { root, totalTime, avgTime, percent, callCount };
   }
 
-  updateLogRows(timers, showLineByLine) {
-    this.rows = Object.entries(timers).map(([label, value]) => ({ label, ...value }));
-    // Always show timers, optionally add line-by-line data
-    this.rows = this.rows.filter((timer) => {
-      const isLineByLine = timer.label === timer.blockId;
-      const isTimer = timer.label !== timer.blockId;
-      return isTimer || (showLineByLine && isLineByLine);
+  renderRow(elements, timer) {
+    const { totalTime, avgTime, percent, callCount } = timer.numbers;
+    const perSymbol = this.config.showRatioTime ? "" : "%";
+    elements.totalTime.textContent = `${totalTime} ms`;
+    elements.avgTime.textContent = avgTime === "" ? "" : `${avgTime} ms`;
+    elements.percent.textContent = `${percent} ${perSymbol}`;
+    elements.callCount.textContent = callCount;
+  }
+
+  getPercent(time, total) {
+    return total === 0 ? "100.00" : ((100 * time) / total).toFixed(2);
+  }
+
+  getMinTime(isProfile) {
+    const times = this.rows.filter((row) => !!row.isProfile === isProfile).map((row) => row.totalTime);
+    const min = Math.min(...times);
+    return min === 0 || min === Infinity ? 0.1 : min;
+  }
+
+  updateLogRows(timers) {
+    const newCache = new Map();
+    this.rows = Object.entries(timers).map(([label, value]) => {
+      const row = Object.assign(this.rowCache.get(label) || {}, value, { label });
+      newCache.set(label, row);
+      return row;
     });
+    this.rowCache = newCache;
     this.tableHeader.style.display = this.rows.length === 0 ? "none" : "flex";
     if (this.sortHeader !== "null") this.sortRows();
-    this.totalTimerTime = this.getTotalTime(showLineByLine);
-    this.minTimerTime = timers["control"]
-      ? timers["control"].totalTime
-      : Math.min(...this.rows.map((t) => t.totalTime));
-    if (this.minTimerTime === 0) this.minTimerTime = 0.1;
+    this.totalProfileTime = this.getTotalTime(true);
+    this.totalTimerTime = this.getTotalTime(false);
+    this.minProfileTime = this.getMinTime(true);
+    this.minTimerTime = this.getMinTime(false);
+    // The sampling profiler doesn't measure average time or call count
+    this.hasSampledRows = this.rows.some((row) => row.isProfile && row.callCount === 0);
+    // Stored on the row so that LogView notices when they change and calls renderRow
+    for (const row of this.rows) {
+      row.numbers = this.getRowNumbers(row);
+      row.showRatioTime = this.config.showRatioTime;
+    }
     this.queueUpdateContent();
+  }
+
+  hasProfileRows() {
+    return this.rows.some((row) => row.isProfile);
   }
 
   sortRows() {
     const { sortDirection, sortHeader } = this.config;
-    this.rows = this.rows.map((row) => ({
-      ...row,
-      avgTime: row.totalTime / row.callCount,
-    }));
+    for (const row of this.rows) {
+      row.avgTime = row.callCount === 0 ? 0 : row.totalTime / row.callCount;
+    }
     this.rows.sort((a, b) => (sortDirection === "ascending" ? 1 : -1) * (a[sortHeader] - b[sortHeader]));
   }
 
-  getTotalTime(showLineByLine = false) {
-    // First check if we have any line-by-line data when profiling is enabled
-    const hasLineByLineData = showLineByLine && this.rows.some((row) => row.label === row.blockId);
-
-    return Object.values(this.rows).reduce((total, row) => {
-      const isLineByLine = row.label === row.blockId;
-      const isTimer = row.label !== row.blockId;
-
-      // If profiling is enabled and we have line-by-line data, only include line-by-line data
-      // If profiling is enabled but no line-by-line data exists, fall back to timer data
-      // If profiling is disabled, only include timer data
-      if (hasLineByLineData && isLineByLine) {
-        return total + row.totalTime;
-      } else if ((!showLineByLine || !hasLineByLineData) && isTimer) {
-        return total + row.totalTime;
-      }
-      return total;
-    }, 0);
+  getTotalTime(isProfile) {
+    return this.rows.reduce((total, row) => (!!row.isProfile === isProfile ? total + row.totalTime : total), 0);
   }
 }
 

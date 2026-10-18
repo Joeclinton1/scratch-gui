@@ -53,6 +53,7 @@ class HeatmapManager {
     this.realtimeUpdateInterval = null;
     this.lastHeatmapTime = 0;
     this.currentHeatmapMax = 1.0; // Store current heatmap max for real-time updates
+    this.coldBlocksColored = false; // Whether blocks without profiler data have been colored
   }
 
   showHeatmapFn(heatmapMax) {
@@ -66,6 +67,7 @@ class HeatmapManager {
   hideHeatmapFn() {
     // Stop real-time updates
     this.stopRealtimeUpdates();
+    this.coldBlocksColored = false;
 
     // Reset all previously colored blocks, not just current timer blocks
     const workspace = this.getWorkspace();
@@ -84,11 +86,7 @@ class HeatmapManager {
   updateBlocks(fillFn) {
     const workspace = this.getWorkspace();
     this.tableRows.rows
-      .filter((timer) => {
-        // Filter timers based on current profiling mode
-        const isLineByLineTimer = timer.label === timer.blockId;
-        return this.config.showLineByLine ? isLineByLineTimer : !isLineByLineTimer;
-      })
+      .filter((timer) => timer.blockId)
       .forEach((timer) => {
         const block = workspace.blockDB_[timer.blockId];
         if (block) fillFn(block, timer);
@@ -135,34 +133,47 @@ class HeatmapManager {
     // Early return if heatmap is disabled
     if (!this.config.showHeatmap) return;
 
-    const totalTimerTime = this.tableRows.getTotalTime(this.config.showLineByLine);
-    if (totalTimerTime === 0) return;
+    // Show profiler data if there is any, otherwise timers
+    const showProfile = this.tableRows.hasProfileRows();
+    // The same block can have rows from both profilers
+    const blockTimes = new Map();
+    for (const timer of this.tableRows.rows) {
+      if (!!timer.isProfile !== showProfile || !timer.blockId) continue;
+      blockTimes.set(timer.blockId, (blockTimes.get(timer.blockId) || 0) + timer.totalTime);
+    }
+
+    let totalTime = 0;
+    for (const time of blockTimes.values()) totalTime += time;
+    if (totalTime === 0) return;
+
+    const percentTimes = [...blockTimes.values()].map((time) => time / totalTime);
+    // Blocks the profiler never saw spent no time running, so the scale starts at 0
+    const min = showProfile ? 0 : Math.min(...percentTimes);
+    const max = Math.max(...percentTimes) * heatmapMax;
 
     const workspace = this.getWorkspace();
 
-    // Filter timers first, then calculate min/max from the filtered set
-    const filteredTimers = this.tableRows.rows.filter((timer) => {
-      // Filter by profiling mode
-      const isLineByLineTimer = timer.label === timer.blockId;
-      const matchesMode = this.config.showLineByLine ? isLineByLineTimer : !isLineByLineTimer;
-
-      // If only updating modified timers, check if this timer was modified
-      return matchesMode && (!onlyModified || this.modifiedTimers.has(timer.blockId));
-    });
-
-    if (filteredTimers.length === 0) return;
-
-    const timerPercentTimes = filteredTimers.map((t) => t.totalTime / totalTimerTime);
-    const min = Math.min(...timerPercentTimes);
-    const max = Math.max(...timerPercentTimes) * heatmapMax;
-
-    filteredTimers.forEach((timer) => {
-      const block = workspace.blockDB_[timer.blockId];
-      if (block) {
-        recursiveFillBlock(block, valueToHeatmapColor(timer.totalTime / totalTimerTime, min, max));
-        this.coloredBlocks.add(timer.blockId);
+    // The cold color never changes, so real-time updates only need to apply it once
+    if (showProfile && (!onlyModified || !this.coldBlocksColored)) {
+      this.coldBlocksColored = true;
+      const coldColor = valueToHeatmapColor(0, min, max);
+      for (const block of workspace.getAllBlocks()) {
+        if (blockTimes.has(block.id) || block.isShadow()) continue;
+        // Reporters are colored along with the block they're in
+        if (block.outputConnection && block.getParent()) continue;
+        recursiveFillBlock(block, coldColor);
+        this.coloredBlocks.add(block.id);
       }
-    });
+    }
+
+    for (const [blockId, time] of blockTimes) {
+      if (onlyModified && !this.modifiedTimers.has(blockId)) continue;
+      const block = workspace.blockDB_[blockId];
+      if (block) {
+        recursiveFillBlock(block, valueToHeatmapColor(time / totalTime, min, max));
+        this.coloredBlocks.add(blockId);
+      }
+    }
 
     if (onlyModified) {
       this.modifiedTimers.clear();
